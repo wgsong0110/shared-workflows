@@ -1,0 +1,110 @@
+name: Build conda environment (diff)
+
+on:
+  workflow_call:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+      release_tag: ${{ steps.check.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if release exists
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ENV_HASH=$(cat base-environment.yml environment.yml requirements.txt 2>/dev/null | sha256sum | cut -c1-7)
+          PREFIX="conda-env"
+          if [ -f .wexec.json ]; then
+            PREFIX=$(python3 -c "
+          import json
+          cfg = json.load(open('.wexec.json'))
+          print(cfg.get('conda_build', {}).get('release_tag', 'conda-env'))
+          " 2>/dev/null || echo "conda-env")
+          fi
+          TAG="${PREFIX}-${ENV_HASH}"
+          echo "release_tag=${TAG}" >> $GITHUB_OUTPUT
+          if gh release view "$TAG" &>/dev/null; then
+            echo "Release $TAG already exists, skipping build"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Release $TAG not found, will build"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache
+          sudo docker image prune -af 2>/dev/null || true
+
+      - name: Cache base environment tarball
+        id: cache-base
+        uses: actions/cache@v4
+        with:
+          path: /tmp/base-dl
+          key: base-env-${{ hashFiles('base-environment.yml') }}
+
+      - name: Download base environment
+        if: steps.cache-base.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          mkdir -p /tmp/base-dl
+          gh release download base-env --repo wgsong0110/session-web --dir /tmp/base-dl
+
+      - name: Unpack base environment
+        run: |
+          sudo mkdir -p /opt/conda
+          sudo chown $USER /opt/conda
+          cat /tmp/base-dl/base-project.tar.gz* | tar xzf - -C /opt/conda
+          /opt/conda/bin/conda-unpack 2>/dev/null || true
+          echo "/opt/conda/bin" >> $GITHUB_PATH
+
+      - name: Create project conda environment
+        env:
+          PIP_NO_CACHE_DIR: "1"
+          CONDA_QUIET: "1"
+        run: |
+          conda create -n project --clone /opt/conda -q
+          if [ -f environment.yml ]; then
+            mamba env update -n project -f environment.yml -q
+          elif [ -f requirements.txt ]; then
+            conda run --no-banner -n project pip install -r requirements.txt -q
+          fi
+
+      - name: Compute diff
+        run: |
+          python3 conda-diff.py /opt/conda /opt/conda/envs/project /tmp/diff-out
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_TAG="${{ needs.check.outputs.release_tag }}"
+          ASSETS="/tmp/diff-out/conda-diff.tar.gz"
+          if [ -s /tmp/diff-out/conda-diff-delete.txt ]; then
+            ASSETS="$ASSETS /tmp/diff-out/conda-diff-delete.txt"
+          fi
+          ASSETS="$ASSETS /tmp/diff-out/conda-diff-meta.json"
+          gh release create "$RELEASE_TAG" \
+            $ASSETS \
+            --title "Conda env diff ($RELEASE_TAG)" \
+            --notes "Auto-built from commit ${{ github.sha }}" \
+            --latest=false
