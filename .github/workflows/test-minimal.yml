@@ -1,0 +1,8 @@
+name: Test minimal
+on:
+  workflow_call:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Hello from shared workflow"
