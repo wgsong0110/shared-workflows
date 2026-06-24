@@ -82,11 +82,11 @@ jobs:
           PIP_NO_CACHE_DIR: "1"
           CONDA_QUIET: "1"
         run: |
-          conda create -n project --clone /opt/conda -q
+          conda create -p /opt/conda/envs/project --clone /opt/conda -q
           if [ -f environment.yml ]; then
-            mamba env update -n project -f environment.yml -q
+            mamba env update -p /opt/conda/envs/project -f environment.yml -q
           elif [ -f requirements.txt ]; then
-            conda run --no-banner -n project pip install -r requirements.txt -q
+            /opt/conda/envs/project/bin/pip install -r requirements.txt -q
           fi
 
       - name: Compute diff
