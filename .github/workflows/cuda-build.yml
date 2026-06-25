@@ -1,0 +1,112 @@
+name: Build CUDA extensions
+
+on:
+  workflow_call:
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      libs: ${{ steps.find.outputs.libs }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PREFIX="cuda-build"
+          if [ -f .wexec.json ]; then
+            PREFIX=$(python3 -c "
+import json
+cfg = json.load(open('.wexec.json'))
+print(cfg.get('cuda_build', {}).get('release_tag', 'cuda-build'))
+" 2>/dev/null || echo "cuda-build")
+          fi
+
+          LIBS='[]'
+          for setup_py in $(find . -name 'setup.py' -not -path './.git/*' | sort); do
+            lib_dir=$(dirname "$setup_py")
+            cuda_files=$(find "$lib_dir" \( -name '*.cu' -o -name '*.cuh' \) | sort)
+            [ -z "$cuda_files" ] && continue
+            lib_name=$(basename "$lib_dir")
+            lib_hash=$(echo "$cuda_files" | xargs sha256sum | sha256sum | cut -c1-7)
+            tag="${PREFIX}-${lib_name}-${lib_hash}"
+
+            if gh release view "$tag" --repo "${{ github.repository }}" &>/dev/null; then
+              echo "SKIP $lib_name: $tag exists"
+              continue
+            fi
+
+            echo "BUILD $lib_name: $tag"
+            LIBS=$(echo "$LIBS" | python3 -c "
+import json,sys; L=json.load(sys.stdin)
+L.append({'name':'$lib_name','dir':'$lib_dir','hash':'$lib_hash'})
+json.dump(L,sys.stdout)")
+          done
+
+          echo "libs=$LIBS" >> "$GITHUB_OUTPUT"
+          echo "Libraries to build: $(echo "$LIBS" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+
+  build:
+    needs: detect
+    if: needs.detect.outputs.libs != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        lib: ${{ fromJson(needs.detect.outputs.libs) }}
+      fail-fast: false
+    container:
+      image: ghcr.io/wgsong0110/build:latest
+      env:
+        CUDA_HOME: /usr/local/cuda
+        TORCH_CUDA_ARCH_LIST: "7.0;7.5;8.0;8.6;8.9;9.0"
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build ${{ matrix.lib.name }}
+        shell: bash
+        run: |
+          export CUDA_HOME=/usr/local/cuda
+          export TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;8.9;9.0"
+          ls "$CUDA_HOME/bin/nvcc" || echo "WARNING: nvcc not found"
+          cd "${{ matrix.lib.dir }}" && python setup.py build_ext --inplace
+
+      - name: Release ${{ matrix.lib.name }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          PREFIX="cuda-build"
+          if [ -f .wexec.json ]; then
+            PREFIX=$(python3 -c "
+import json
+cfg = json.load(open('.wexec.json'))
+print(cfg.get('cuda_build', {}).get('release_tag', 'cuda-build'))
+" 2>/dev/null || echo "cuda-build")
+          fi
+          TAG="${PREFIX}-${{ matrix.lib.name }}-${{ matrix.lib.hash }}"
+          LIB_DIR="${{ matrix.lib.dir }}"
+
+          so_files=$(find "$LIB_DIR" -name '*.so' \
+            -not -path '*/build/*' \
+            -not -path '*/__pycache__/*')
+
+          if [ -z "$so_files" ]; then
+            echo "ERROR: no .so files found after build"
+            exit 1
+          fi
+
+          echo "$so_files" > /tmp/so_list.txt
+          tar czf "/tmp/${{ matrix.lib.name }}.tar.gz" -T /tmp/so_list.txt
+          echo "Archive: $(du -h /tmp/${{ matrix.lib.name }}.tar.gz | cut -f1)"
+
+          gh release create "$TAG" \
+            "/tmp/${{ matrix.lib.name }}.tar.gz" \
+            --repo "${{ github.repository }}" \
+            --title "CUDA: ${{ matrix.lib.name }} (${{ matrix.lib.hash }})" \
+            --notes "Auto-built from commit ${{ github.sha }}" \
+            --latest=false
+          echo "Released: $TAG"

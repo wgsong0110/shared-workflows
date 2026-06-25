@@ -11,6 +11,7 @@ jobs:
     outputs:
       skip: ${{ steps.check.outputs.skip }}
       release_tag: ${{ steps.check.outputs.release_tag }}
+      base_sha: ${{ steps.check.outputs.base_sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -18,15 +19,20 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
-          ENV_HASH=$(cat base-environment.yml environment.yml requirements.txt 2>/dev/null | sha256sum | cut -c1-7)
+          BASE_SHA=$(GH_TOKEN="$GHCR_TOKEN" gh api \
+            repos/wgsong0110/session-web/contents/base-environment.yml -q '.sha')
+          echo "base_sha=${BASE_SHA}" >> $GITHUB_OUTPUT
+
+          ENV_HASH=$(printf '%s' "$BASE_SHA" | cat - environment.yml requirements.txt 2>/dev/null | sha256sum | cut -c1-7)
           PREFIX="conda-env"
           if [ -f .wexec.json ]; then
             PREFIX=$(python3 -c "
-          import json
-          cfg = json.load(open('.wexec.json'))
-          print(cfg.get('conda_build', {}).get('release_tag', 'conda-env'))
-          " 2>/dev/null || echo "conda-env")
+import json
+cfg = json.load(open('.wexec.json'))
+print(cfg.get('conda_build', {}).get('release_tag', 'conda-env'))
+" 2>/dev/null || echo "conda-env")
           fi
           TAG="${PREFIX}-${ENV_HASH}"
           echo "release_tag=${TAG}" >> $GITHUB_OUTPUT
@@ -59,7 +65,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/base-dl
-          key: base-env-${{ hashFiles('base-environment.yml') }}
+          key: base-env-${{ needs.check.outputs.base_sha }}
 
       - name: Download base environment
         if: steps.cache-base.outputs.cache-hit != 'true'
@@ -90,8 +96,13 @@ jobs:
           fi
 
       - name: Compute diff
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
-          python3 conda-diff.py /opt/conda /opt/conda/envs/project /tmp/diff-out
+          GH_TOKEN="$GH_TOKEN" gh api \
+            repos/wgsong0110/shared-workflows/contents/conda-diff.py \
+            -q '.content' | base64 -d > /tmp/conda-diff.py
+          python3 /tmp/conda-diff.py /opt/conda /opt/conda/envs/project /tmp/diff-out
 
       - name: Create release
         env:
