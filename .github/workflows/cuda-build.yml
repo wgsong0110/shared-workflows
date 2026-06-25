@@ -59,7 +59,7 @@ json.dump(L,sys.stdout)")
       image: ghcr.io/wgsong0110/build:latest
       env:
         CUDA_HOME: /usr/local/cuda
-        TORCH_CUDA_ARCH_LIST: "7.0;7.5;8.0;8.6;8.9;9.0"
+        TORCH_CUDA_ARCH_LIST: "7.0;7.5;8.0;8.6;8.9;9.0;12.0"
     permissions:
       contents: write
 
