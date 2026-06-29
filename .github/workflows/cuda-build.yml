@@ -16,11 +16,7 @@ jobs:
         run: |
           PREFIX="cuda-build"
           if [ -f .wexec.json ]; then
-            PREFIX=$(python3 -c "
-import json
-cfg = json.load(open('.wexec.json'))
-print(cfg.get('cuda_build', {}).get('release_tag', 'cuda-build'))
-" 2>/dev/null || echo "cuda-build")
+            PREFIX=$(jq -r '.cuda_build.release_tag // "cuda-build"' .wexec.json 2>/dev/null || echo "cuda-build")
           fi
 
           LIBS='[]'
@@ -38,14 +34,12 @@ print(cfg.get('cuda_build', {}).get('release_tag', 'cuda-build'))
             fi
 
             echo "BUILD $lib_name: $tag"
-            LIBS=$(echo "$LIBS" | python3 -c "
-import json,sys; L=json.load(sys.stdin)
-L.append({'name':'$lib_name','dir':'$lib_dir','hash':'$lib_hash'})
-json.dump(L,sys.stdout)")
+            LIBS=$(echo "$LIBS" | jq -c --arg name "$lib_name" --arg dir "$lib_dir" --arg hash "$lib_hash" \
+              '. + [{"name":$name,"dir":$dir,"hash":$hash}]')
           done
 
           echo "libs=$LIBS" >> "$GITHUB_OUTPUT"
-          echo "Libraries to build: $(echo "$LIBS" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+          echo "Libraries to build: $(echo "$LIBS" | jq length)"
 
   build:
     needs: detect
@@ -81,11 +75,7 @@ json.dump(L,sys.stdout)")
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           PREFIX="cuda-build"
           if [ -f .wexec.json ]; then
-            PREFIX=$(python3 -c "
-import json
-cfg = json.load(open('.wexec.json'))
-print(cfg.get('cuda_build', {}).get('release_tag', 'cuda-build'))
-" 2>/dev/null || echo "cuda-build")
+            PREFIX=$(jq -r '.cuda_build.release_tag // "cuda-build"' .wexec.json 2>/dev/null || echo "cuda-build")
           fi
           TAG="${PREFIX}-${{ matrix.lib.name }}-${{ matrix.lib.hash }}"
           LIB_DIR="${{ matrix.lib.dir }}"
